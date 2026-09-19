@@ -58,9 +58,7 @@
         <div v-if="store.plan" class="bg-slate-800 rounded-lg p-4 border border-slate-700">
           <h3 class="text-sm font-bold text-slate-400 mb-3">执行计划树</h3>
           <div class="overflow-x-auto">
-            <div class="font-mono text-xs text-slate-300 space-y-1">
-              <PlanNode :node="store.plan" :depth="0" />
-            </div>
+            <canvas ref="planCanvasRef" class="block"></canvas>
           </div>
         </div>
         <div v-if="store.parsed" class="bg-slate-800 rounded-lg p-4 border border-slate-700">
@@ -73,94 +71,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, defineComponent, h } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useSQLStore, SQL_TEMPLATES, SCHEMA_TABLES } from './store/sql'
+import { renderER, renderPlan, useDiagramRedraw } from './diagram'
 
 const store = useSQLStore()
 const erCanvasRef = ref<HTMLCanvasElement | null>(null)
+const planCanvasRef = ref<HTMLCanvasElement | null>(null)
 
-const PlanNode = defineComponent({
-  props: { node: Object, depth: Number },
-  setup(props) {
-    return () => {
-      if (!props.node) return null
-      const n = props.node as any
-      const indent = '  '.repeat(props.depth || 0)
-      const opColor = n.operation.includes('Scan') ? '#22c55e' : n.operation.includes('Join') ? '#f97316' : n.operation.includes('Sort') ? '#8b5cf6' : '#06b6d4'
-      return h('div', [
-        h('div', { style: `padding-left: ${(props.depth || 0) * 20}px` }, [
-          h('span', { style: 'color: #475569' }, indent.replace(/\s\s/g, '│ ').replace(/│ $/, '└─')),
-          h('span', { style: `color: ${opColor}; font-weight: bold` }, n.operation),
-          n.table ? h('span', { style: 'color: #94a3b8' }, ` on ${n.table}`) : null,
-          n.index ? h('span', { style: 'color: #eab308' }, ` [${n.index}]`) : null,
-          h('span', { style: 'color: #64748b' }, ` cost=${n.cost.toFixed(1)} rows=${n.rows}`),
-        ]),
-        ...(n.children || []).map((child: any) => h(PlanNode, { node: child, depth: (props.depth || 0) + 1 }))
-      ])
-    }
-  }
-})
+// 两个展示共用同一个重绘入口：数据变化或窗口尺寸变化时，
+// 都按当前容器尺寸重新计算布局并重绘（合帧、全局仅一个 resize 监听）。
+useDiagramRedraw([
+  () => erCanvasRef.value && renderER(erCanvasRef.value, store.parsed),
+  () => planCanvasRef.value && renderPlan(planCanvasRef.value, store.plan),
+], [() => store.parsed, () => store.plan])
 
-function drawER() {
-  const canvas = erCanvasRef.value
-  if (!canvas || !store.parsed) return
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  const tables = store.parsed.tables
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  canvas.width = canvas.clientWidth
-  canvas.height = 200
-  const W = canvas.width, H = 200
-  const spacing = W / (tables.length + 1)
-  const positions: Record<string, { x: number; y: number }> = {}
-  tables.forEach((t, i) => { positions[t] = { x: spacing * (i + 1), y: H / 2 } })
-
-  // Draw joins
-  store.parsed.joins.forEach(j => {
-    const src = positions[tables[0]]
-    const dst = positions[j.table]
-    if (!src || !dst) return
-    ctx.beginPath()
-    ctx.moveTo(src.x, src.y)
-    ctx.lineTo(dst.x, dst.y)
-    ctx.strokeStyle = '#f97316'
-    ctx.lineWidth = 2
-    ctx.setLineDash([4, 4])
-    ctx.stroke()
-    ctx.setLineDash([])
-    const mx = (src.x + dst.x) / 2, my = (src.y + dst.y) / 2
-    ctx.fillStyle = '#f97316'
-    ctx.font = '10px monospace'
-    ctx.textAlign = 'center'
-    ctx.fillText(j.type, mx, my - 5)
-  })
-
-  // Draw table boxes
-  tables.forEach((t, i) => {
-    const pos = positions[t]
-    if (!pos) return
-    const x = pos.x, y = pos.y
-    ctx.fillStyle = '#1e293b'
-    ctx.strokeStyle = '#3b82f6'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.roundRect(x - 50, y - 30, 100, 60, 6)
-    ctx.fill()
-    ctx.stroke()
-    ctx.fillStyle = '#06b6d4'
-    ctx.font = 'bold 13px monospace'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(t, x, y - 10)
-    const schema = SCHEMA_TABLES.find(s => s.name === t)
-    if (schema) {
-      ctx.fillStyle = '#64748b'
-      ctx.font = '10px monospace'
-      ctx.fillText(schema.rowCount.toLocaleString() + ' rows', x, y + 10)
-    }
-  })
-}
-
-onMounted(() => { store.analyze(); setTimeout(drawER, 200) })
-watch(() => store.parsed, () => setTimeout(drawER, 100), { deep: true })
+onMounted(() => { store.analyze() })
 </script>

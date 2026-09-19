@@ -65,7 +65,7 @@
         </div>
         <div v-if="store.parsed" class="bg-slate-800 rounded-lg p-4 border border-slate-700">
           <h3 class="text-sm font-bold text-slate-400 mb-3">涉及表与关联关系</h3>
-          <canvas ref="erCanvasRef" class="w-full bg-slate-900 rounded" style="height:200px"></canvas>
+          <canvas ref="erCanvasRef" class="w-full bg-slate-900 rounded" :style="{ height: DIAGRAM_LAYOUT.canvasHeight + 'px' }"></canvas>
         </div>
       </div>
     </div>
@@ -73,8 +73,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, defineComponent, h } from 'vue'
+import { ref, onMounted, defineComponent, h } from 'vue'
 import { useSQLStore, SQL_TEMPLATES, SCHEMA_TABLES } from './store/sql'
+import { DIAGRAM_COLORS, DIAGRAM_LAYOUT, layoutNodePositions, operationColor, useDiagramRedraw, type DiagramPoint } from './diagram'
 
 const store = useSQLStore()
 const erCanvasRef = ref<HTMLCanvasElement | null>(null)
@@ -85,17 +86,18 @@ const PlanNode = defineComponent({
     return () => {
       if (!props.node) return null
       const n = props.node as any
-      const indent = '  '.repeat(props.depth || 0)
-      const opColor = n.operation.includes('Scan') ? '#22c55e' : n.operation.includes('Join') ? '#f97316' : n.operation.includes('Sort') ? '#8b5cf6' : '#06b6d4'
+      const depth = props.depth || 0
+      const indent = '  '.repeat(depth)
+      const opColor = operationColor(n.operation)
       return h('div', [
-        h('div', { style: `padding-left: ${(props.depth || 0) * 20}px` }, [
-          h('span', { style: 'color: #475569' }, indent.replace(/\s\s/g, '│ ').replace(/│ $/, '└─')),
+        h('div', { style: `padding-left: ${depth * DIAGRAM_LAYOUT.indentPerDepth}px` }, [
+          h('span', { style: `color: ${DIAGRAM_COLORS.guide}` }, indent.replace(/\s\s/g, '│ ').replace(/│ $/, '└─')),
           h('span', { style: `color: ${opColor}; font-weight: bold` }, n.operation),
-          n.table ? h('span', { style: 'color: #94a3b8' }, ` on ${n.table}`) : null,
-          n.index ? h('span', { style: 'color: #eab308' }, ` [${n.index}]`) : null,
-          h('span', { style: 'color: #64748b' }, ` cost=${n.cost.toFixed(1)} rows=${n.rows}`),
+          n.table ? h('span', { style: `color: ${DIAGRAM_COLORS.table}` }, ` on ${n.table}`) : null,
+          n.index ? h('span', { style: `color: ${DIAGRAM_COLORS.index}` }, ` [${n.index}]`) : null,
+          h('span', { style: `color: ${DIAGRAM_COLORS.muted}` }, ` cost=${n.cost.toFixed(1)} rows=${n.rows}`),
         ]),
-        ...(n.children || []).map((child: any) => h(PlanNode, { node: child, depth: (props.depth || 0) + 1 }))
+        ...(n.children || []).map((child: any) => h(PlanNode, { node: child, depth: depth + 1 }))
       ])
     }
   }
@@ -109,11 +111,10 @@ function drawER() {
   const tables = store.parsed.tables
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   canvas.width = canvas.clientWidth
-  canvas.height = 200
-  const W = canvas.width, H = 200
-  const spacing = W / (tables.length + 1)
-  const positions: Record<string, { x: number; y: number }> = {}
-  tables.forEach((t, i) => { positions[t] = { x: spacing * (i + 1), y: H / 2 } })
+  canvas.height = DIAGRAM_LAYOUT.canvasHeight
+  const W = canvas.width, H = DIAGRAM_LAYOUT.canvasHeight
+  const positions: Record<string, DiagramPoint> = {}
+  layoutNodePositions(W, tables.length, H).forEach((pos, i) => { positions[tables[i]] = pos })
 
   // Draw joins
   store.parsed.joins.forEach(j => {
@@ -123,44 +124,44 @@ function drawER() {
     ctx.beginPath()
     ctx.moveTo(src.x, src.y)
     ctx.lineTo(dst.x, dst.y)
-    ctx.strokeStyle = '#f97316'
+    ctx.strokeStyle = DIAGRAM_COLORS.join
     ctx.lineWidth = 2
     ctx.setLineDash([4, 4])
     ctx.stroke()
     ctx.setLineDash([])
     const mx = (src.x + dst.x) / 2, my = (src.y + dst.y) / 2
-    ctx.fillStyle = '#f97316'
+    ctx.fillStyle = DIAGRAM_COLORS.join
     ctx.font = '10px monospace'
     ctx.textAlign = 'center'
     ctx.fillText(j.type, mx, my - 5)
   })
 
   // Draw table boxes
-  tables.forEach((t, i) => {
+  tables.forEach(t => {
     const pos = positions[t]
     if (!pos) return
     const x = pos.x, y = pos.y
-    ctx.fillStyle = '#1e293b'
-    ctx.strokeStyle = '#3b82f6'
+    ctx.fillStyle = DIAGRAM_COLORS.nodeFill
+    ctx.strokeStyle = DIAGRAM_COLORS.nodeBorder
     ctx.lineWidth = 2
     ctx.beginPath()
-    ctx.roundRect(x - 50, y - 30, 100, 60, 6)
+    ctx.roundRect(x - DIAGRAM_LAYOUT.nodeWidth / 2, y - DIAGRAM_LAYOUT.nodeHeight / 2, DIAGRAM_LAYOUT.nodeWidth, DIAGRAM_LAYOUT.nodeHeight, DIAGRAM_LAYOUT.nodeRadius)
     ctx.fill()
     ctx.stroke()
-    ctx.fillStyle = '#06b6d4'
+    ctx.fillStyle = DIAGRAM_COLORS.default
     ctx.font = 'bold 13px monospace'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(t, x, y - 10)
     const schema = SCHEMA_TABLES.find(s => s.name === t)
     if (schema) {
-      ctx.fillStyle = '#64748b'
+      ctx.fillStyle = DIAGRAM_COLORS.muted
       ctx.font = '10px monospace'
       ctx.fillText(schema.rowCount.toLocaleString() + ' rows', x, y + 10)
     }
   })
 }
 
-onMounted(() => { store.analyze(); setTimeout(drawER, 200) })
-watch(() => store.parsed, () => setTimeout(drawER, 100), { deep: true })
+onMounted(() => { store.analyze() })
+useDiagramRedraw(drawER, [() => store.parsed])
 </script>
